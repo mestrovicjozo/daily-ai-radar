@@ -58,3 +58,17 @@ python -m daily_ai_radar --date 2026-04-30
 ```
 
 Without `--date`, the current UTC date is used.
+
+## GitHub Actions
+
+The workflow runs every morning and can also be started manually from the
+Actions tab. It:
+
+1. Installs Python dependencies
+2. Runs the test suite
+3. Fetches recent RSS/Atom articles
+4. Selects the top and honorable mention article for each category
+5. Uses Gemini to write concise newsletter copy
+6. Commits the generated Markdown file under `digests/YYYY-MM-DD.md`
+
+The default Gemini model is `gemini-2.5-flash`.

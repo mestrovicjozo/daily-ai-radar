@@ -7,7 +7,7 @@ from google import genai
 
 from daily_ai_radar.models import Article, ArticleSummary, NewsletterCopy, Selection
 
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 def generate_newsletter_copy(selection: Selection, *, model: str = DEFAULT_MODEL) -> NewsletterCopy:

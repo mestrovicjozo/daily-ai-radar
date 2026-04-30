@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("digests"))
     parser.add_argument("--date", type=_parse_date, default=datetime.now(UTC).date())
     parser.add_argument("--lookback-hours", type=int, default=36)
-    parser.add_argument("--model", default="gemini-2.0-flash")
+    parser.add_argument("--model", default="gemini-2.5-flash")
     args = parser.parse_args(argv)
 
     since = datetime.now(UTC) - timedelta(hours=args.lookback_hours)
