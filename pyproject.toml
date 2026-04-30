@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daily-ai-radar"
+version = "0.1.0"
+description = "Generate a daily AI newsletter from RSS feeds with Gemini summaries."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "feedparser==6.0.11",
+  "google-genai==1.12.1",
+  "pytest==8.3.5",
+  "PyYAML==6.0.2",
+  "python-dateutil==2.9.0.post0",
+  "requests==2.32.3",
+]
+
+[project.scripts]
+daily-ai-radar = "daily_ai_radar.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
