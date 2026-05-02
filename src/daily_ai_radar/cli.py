@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from daily_ai_radar.config import load_feeds
 from daily_ai_radar.fetch import fetch_articles
 from daily_ai_radar.gemini import generate_newsletter_copy
+from daily_ai_radar.models import Article, Feed
 from daily_ai_radar.ranking import rank_and_select
 from daily_ai_radar.render import render_markdown
+
+MIN_ARTICLES_PER_CATEGORY = 2
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,14 +21,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("digests"))
     parser.add_argument("--date", type=_parse_date, default=datetime.now(UTC).date())
     parser.add_argument("--lookback-hours", type=int, default=36)
+    parser.add_argument("--max-lookback-hours", type=int, default=168)
     parser.add_argument("--model", default="gemini-2.5-flash")
     args = parser.parse_args(argv)
 
-    since = datetime.now(UTC) - timedelta(hours=args.lookback_hours)
-
     feeds = load_feeds(args.config)
-    articles = fetch_articles(feeds, since=since)
-    print(f"Fetched {len(articles)} recent articles.")
+    articles = _fetch_with_fallback(
+        feeds,
+        initial_lookback_hours=args.lookback_hours,
+        max_lookback_hours=args.max_lookback_hours,
+    )
 
     selection = rank_and_select(articles, now=datetime.now(UTC))
     newsletter_copy = generate_newsletter_copy(selection, model=args.model)
@@ -39,3 +45,39 @@ def main(argv: list[str] | None = None) -> int:
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
+
+
+def _fetch_with_fallback(
+    feeds: list[Feed],
+    *,
+    initial_lookback_hours: int,
+    max_lookback_hours: int,
+) -> list[Article]:
+    required_categories = {feed.category for feed in feeds}
+    lookback = max(1, initial_lookback_hours)
+    max_lookback = max(lookback, max_lookback_hours)
+    articles: list[Article] = []
+
+    while True:
+        since = datetime.now(UTC) - timedelta(hours=lookback)
+        articles = fetch_articles(feeds, since=since)
+        per_category = Counter(a.category for a in articles)
+        insufficient = sorted(
+            cat for cat in required_categories if per_category[cat] < MIN_ARTICLES_PER_CATEGORY
+        )
+
+        if not insufficient or lookback >= max_lookback:
+            print(f"Fetched {len(articles)} articles (lookback={lookback}h).")
+            if insufficient:
+                print(
+                    "Warning: still under-supplied after extending lookback for: "
+                    f"{', '.join(insufficient)}"
+                )
+            return articles
+
+        new_lookback = min(max_lookback, max(lookback * 2, lookback + 24))
+        print(
+            f"Insufficient articles in {insufficient} at lookback={lookback}h; "
+            f"extending to {new_lookback}h."
+        )
+        lookback = new_lookback
