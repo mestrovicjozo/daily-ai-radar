@@ -5,10 +5,18 @@ on:
     - cron: "30 5 * * *"
   workflow_dispatch:
     inputs:
+      date:
+        description: "Issue date YYYY-MM-DD (default: today UTC)"
+        required: false
+        default: ""
       lookback_hours:
         description: "How many hours of RSS history to consider"
         required: false
         default: "36"
+      max_lookback_hours:
+        description: "Hard cap when auto-extending lookback to fill sparse categories"
+        required: false
+        default: "168"
       model:
         description: "Gemini model ID"
         required: false
@@ -46,12 +54,18 @@ jobs:
       - name: Generate newsletter
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ISSUE_DATE: ${{ inputs.date || '' }}
           LOOKBACK_HOURS: ${{ inputs.lookback_hours || '36' }}
+          MAX_LOOKBACK_HOURS: ${{ inputs.max_lookback_hours || '168' }}
           GEMINI_MODEL: ${{ inputs.model || 'gemini-2.5-flash' }}
         run: |
+          if [ -z "$ISSUE_DATE" ]; then
+            ISSUE_DATE="$(date -u +'%Y-%m-%d')"
+          fi
           python -m daily_ai_radar \
-            --date "$(date -u +'%Y-%m-%d')" \
+            --date "$ISSUE_DATE" \
             --lookback-hours "$LOOKBACK_HOURS" \
+            --max-lookback-hours "$MAX_LOOKBACK_HOURS" \
             --model "$GEMINI_MODEL"
 
       - name: Commit newsletter
@@ -62,6 +76,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "No newsletter changes to commit."
           else
-            git commit -m "Add daily AI radar for $(date -u +'%Y-%m-%d')"
+            ISSUE_DATE="${{ inputs.date }}"
+            if [ -z "$ISSUE_DATE" ]; then
+              ISSUE_DATE="$(date -u +'%Y-%m-%d')"
+            fi
+            git commit -m "Add daily AI radar for $ISSUE_DATE"
             git push
           fi

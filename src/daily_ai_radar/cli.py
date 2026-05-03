@@ -32,7 +32,13 @@ def main(argv: list[str] | None = None) -> int:
         max_lookback_hours=args.max_lookback_hours,
     )
 
-    selection = rank_and_select(articles, now=datetime.now(UTC))
+    source_history = _recent_source_counts(args.output_dir, now=datetime.now(UTC))
+    if source_history:
+        print(f"Source-diversity penalties from past 7 days: {source_history}")
+
+    selection = rank_and_select(
+        articles, now=datetime.now(UTC), source_history=source_history
+    )
     newsletter_copy = generate_newsletter_copy(selection, model=args.model)
     markdown = render_markdown(selection, newsletter_copy, issue_date=args.date)
 
@@ -81,3 +87,24 @@ def _fetch_with_fallback(
             f"extending to {new_lookback}h."
         )
         lookback = new_lookback
+
+
+def _recent_source_counts(
+    output_dir: Path, *, now: datetime, days: int = 7
+) -> dict[str, int]:
+    if not output_dir.exists():
+        return {}
+    cutoff = (now - timedelta(days=days)).date()
+    counts: Counter[str] = Counter()
+    prefix = "**Source:** "
+    for md in output_dir.glob("*.md"):
+        try:
+            issue_date = date.fromisoformat(md.stem)
+        except ValueError:
+            continue
+        if issue_date < cutoff:
+            continue
+        for line in md.read_text(encoding="utf-8").splitlines():
+            if line.startswith(prefix):
+                counts[line[len(prefix):].strip()] += 1
+    return dict(counts)
