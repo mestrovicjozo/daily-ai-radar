@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from google import genai
+from google.genai import errors as genai_errors
 
 from daily_ai_radar.models import Article, ArticleSummary, NewsletterCopy, Selection
 
 DEFAULT_MODEL = "gemini-2.5-flash"
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 5
+INITIAL_BACKOFF_SECONDS = 4.0
+BACKOFF_MULTIPLIER = 2.0
+FALLBACK_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
 
 
 def generate_newsletter_copy(selection: Selection, *, model: str = DEFAULT_MODEL) -> NewsletterCopy:
@@ -19,7 +26,7 @@ def generate_newsletter_copy(selection: Selection, *, model: str = DEFAULT_MODEL
     prompt = _build_prompt(articles)
 
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model=model, contents=prompt)
+    response = _generate_with_retry(client, prompt, model=model)
     text = (response.text or "").strip()
     data = _parse_json_response(text)
 
@@ -37,6 +44,42 @@ def generate_newsletter_copy(selection: Selection, *, model: str = DEFAULT_MODEL
         raise RuntimeError(f"Gemini response omitted summaries for: {', '.join(sorted(missing))}")
 
     return NewsletterCopy(intro=data["intro"].strip(), article_summaries=summaries)
+
+
+def _generate_with_retry(client: "genai.Client", prompt: str, *, model: str):
+    models_to_try: list[str] = [model]
+    for fallback in FALLBACK_MODELS:
+        if fallback not in models_to_try:
+            models_to_try.append(fallback)
+
+    last_error: Exception | None = None
+    for current_model in models_to_try:
+        backoff = INITIAL_BACKOFF_SECONDS
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return client.models.generate_content(model=current_model, contents=prompt)
+            except genai_errors.APIError as exc:
+                status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                last_error = exc
+                if status not in RETRYABLE_STATUS:
+                    raise
+                if attempt == MAX_ATTEMPTS:
+                    print(
+                        f"Gemini {current_model} returned {status} after {attempt} attempts; "
+                        "trying next fallback model."
+                    )
+                    break
+                print(
+                    f"Gemini {current_model} returned {status} "
+                    f"(attempt {attempt}/{MAX_ATTEMPTS}); retrying in {backoff:.1f}s."
+                )
+                time.sleep(backoff)
+                backoff *= BACKOFF_MULTIPLIER
+
+    assert last_error is not None
+    raise RuntimeError(
+        f"Gemini API was unavailable after retries across models {models_to_try}: {last_error}"
+    ) from last_error
 
 
 def _selected_articles(selection: Selection) -> list[tuple[str, Article]]:
