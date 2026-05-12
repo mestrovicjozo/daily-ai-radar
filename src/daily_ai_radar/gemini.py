@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from daily_ai_radar.models import Article, ArticleSummary, NewsletterCopy, Selection
 
@@ -52,12 +54,16 @@ def _generate_with_retry(client: "genai.Client", prompt: str, *, model: str):
         if fallback not in models_to_try:
             models_to_try.append(fallback)
 
+    config = genai_types.GenerateContentConfig(response_mime_type="application/json")
+
     last_error: Exception | None = None
     for current_model in models_to_try:
         backoff = INITIAL_BACKOFF_SECONDS
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                return client.models.generate_content(model=current_model, contents=prompt)
+                return client.models.generate_content(
+                    model=current_model, contents=prompt, config=config
+                )
             except genai_errors.APIError as exc:
                 status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
                 last_error = exc
@@ -129,13 +135,90 @@ Articles:
 
 
 def _parse_json_response(text: str) -> dict:
-    cleaned = text
+    cleaned = text.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
     elif cleaned.startswith("```"):
         cleaned = cleaned.removeprefix("```").removesuffix("```").strip()
 
-    data = json.loads(cleaned)
-    if not isinstance(data, dict) or "intro" not in data or "articles" not in data:
-        raise RuntimeError("Gemini returned an invalid newsletter payload")
-    return data
+    cleaned = _extract_json_object(cleaned)
+
+    for candidate in _json_repair_candidates(cleaned):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "intro" in data and "articles" in data:
+            return data
+
+    raise RuntimeError("Gemini returned an invalid newsletter payload")
+
+
+def _extract_json_object(text: str) -> str:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return text
+    return text[start : end + 1]
+
+
+def _json_repair_candidates(text: str):
+    yield text
+
+    sanitized = _strip_bad_control_chars(text)
+    if sanitized != text:
+        yield sanitized
+
+    repaired = _escape_inner_quotes(sanitized)
+    if repaired != sanitized:
+        yield repaired
+
+
+def _strip_bad_control_chars(text: str) -> str:
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+
+
+def _escape_inner_quotes(text: str) -> str:
+    """Best-effort fix for unescaped " inside JSON string values.
+
+    Walks the text, tracks whether we're inside a "..." string, and escapes any
+    quote that's followed by characters which can't legally end a JSON string in
+    this context (i.e. not a comma/colon/closing bracket/whitespace+those).
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escape:
+            out.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escape = True
+            i += 1
+            continue
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                out.append(ch)
+            else:
+                # Look ahead past whitespace; a legal closer is followed by , : } ] or EOF.
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                next_char = text[j] if j < n else ""
+                if next_char in ",:}]" or next_char == "":
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append('\\"')
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
